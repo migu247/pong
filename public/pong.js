@@ -10,7 +10,7 @@ const BALL_DELTATIME = 0.5;
 const BALL_VELOCIDAD = 5;
 const BG_COLOR = `BLACK`;
 const PADDLE_RIGHT_COLOR = `WHITE`;
-const PADDLE_LEFT_COLOR = `RED`;
+const PADDLE_LEFT_COLOR = `WHITE`;
 const PADDLE_WIDTH = 20;
 const PADDLE_HEIGHT = 100;
 const NET_COLOR = `WHITE`;
@@ -71,14 +71,118 @@ const paddle = {
     color: NET_COLOR
 }
 
-var localPlayer;
-var computer;
+let localPlayer;
+let remotePlayer;
 
-function setPlayers() {
-    localPlayer = playerA;
-    computer = playerB;
+//SOCKET helpers ..................................
+
+const WEBSOCKET_SERVER = `http://localhost:5000`;
+const LOCAL_PLAYER_COLOR = 'RED';
+
+let socket;
+let localPlayerIndx;
+let remotePlayerIndx;
+
+
+function sendBallStatus() {
+    const ballStatus = {
+        x: ball.x,
+        y: ball.y,
+        speed: ball.speed,
+        velx: ball.velx,
+        vely: ball.vely
+    }
+
+    socket.emit('updateBall', ballStatus);
+}
+
+function sendLocalPlayerStatus(canal = 'updatePlayer') {
+    const localPlayerStatus = {
+        id: localPlayer.id,
+        y: localPlayer.y,
+        width: localPlayer.width,
+        height: localPlayer.height
+    }
+
+    socket.emit(canal, localPlayerStatus)
+}
+
+function sendUpdateScore(scoreIndx) {
+    socket.emit('updateScore', scoreIndx);
+}
+
+//Eventos entrantes
+
+function onHeartBeat(state) {
+    //Actualizamos estado del remoto
+    remotePlayer.y = state.players[remotePlayerIndx].y;
+
+    //Actualizamos el stado de la pelota
+
+    ball.x = state.ball.x;
+    ball.y = state.ball.y;
+    ball.speed = state.ball.speed;
+    ball.velx = state.ball.velx;
+    ball.vely = state.ball.vely;
+}
+
+function onUpdateScore(scoreIndx) {
+
+    if (scoreIndx === 1 && localPlayer.x === 0 || scoreIndx === 0 && localPlayer.x !== 0) {
+
+        newBall();
+
+
+    }
+
+    scoreIndx === 0 ? playerA.score++ : playerB.score++;
 
 }
+
+function setPlayers(serverCounter) {
+
+    function registerPlayer(local, remote, localIndx, remoteIndx) {
+        localPlayer = local;
+        remotePlayer = remote;
+        localPlayerIndx = localIndx;
+        remotePlayerIndx = remoteIndx;
+
+        localPlayer.id = socket.id;
+        localPlayer.color = LOCAL_PLAYER_COLOR;
+        localPlayer.y = cvs.height / 2 - localPlayer.height / 2;
+        localPlayer.score = 0;
+
+        sendLocalPlayerStatus('start');
+    }
+
+    switch (serverCounter) {
+        case 1:
+            registerPlayer(playerA, playerB, 0, 1);
+            drawText('Esperando rival...', cvs.width / 4, cvs.height / 2, 'GREEN');
+            break;
+        case 2:
+            if (playerA.id === undefined) {
+                registerPlayer(playerB, playerA, 1, 0);
+            }
+            //Ambos jugadres harán lo siguiente
+            console.log("Comenzamos el juego");
+            newBall();
+            sendBallStatus();
+            socket.on('heartBeat', onHeartBeat);
+            initLoopGame();
+    }
+
+}
+
+//Iniciamos la conexion
+
+function initServerConnection() {
+    socket = io.connect(WEBSOCKET_SERVER);
+
+    socket.on('getCounter', setPlayers);
+    socket.on('updateScore', onUpdateScore);
+}
+
 
 //Helpers 
 
@@ -103,6 +207,14 @@ function drawText(text, x, y, color = FONT_COLOR, font_size = FONT_SIZE, font_fa
 
 // Helpers del PONG
 
+function drawBoard() {
+    clearCanvas();
+    drawNet();
+    drawPaddle(playerA);
+    drawPaddle(playerB);
+
+}
+
 function clearCanvas() {
     drawRect(0, 0, cvs.width, cvs.height, BG_COLOR);
 }
@@ -115,8 +227,8 @@ function drawNet() {
 }
 
 function drawScore() {
-    drawText(localPlayer.score, 1 * (cvs.width / 4), cvs.height / 5);
-    drawText(computer.score, 3 * (cvs.width / 4), cvs.height / 5);
+    drawText(localPlayer.score, (localPlayer.x === 0 ? 1 : 3) * (cvs.width / 4), cvs.height / 5);
+    drawText(remotePlayer.score, (remotePlayer.x === 0 ? 1 : 3) * (cvs.width / 4), cvs.height / 5);
 }
 
 function drawPaddle(paddle) {
@@ -133,7 +245,7 @@ function render() {
     drawScore();
     drawBall();
     drawPaddle(localPlayer);
-    drawPaddle(computer);
+    drawPaddle(remotePlayer);
 
     if (isGameOver()) {
         endGame();
@@ -144,7 +256,7 @@ function render() {
 
 function isGameOver() {
     console.log("derrota")
-    return localPlayer.score >= NUM_BALLS || computer.score >= NUM_BALLS;
+    return localPlayer.score >= NUM_BALLS || remotePlayer.score >= NUM_BALLS;
 }
 
 function endGame() {
@@ -152,6 +264,13 @@ function endGame() {
     drawText('GAME OVER', cvs.width / 3, cvs.height / 2, 'BLUE');
 
     stopGameLoop();
+    sendBallStatus();
+    sendLocalPlayerStatus();
+
+    setTimeout(() => {
+        socket.disconnect();
+    }, 100);
+
 }
 
 function initPaddleMovement() {
@@ -188,12 +307,6 @@ function collision(b, p) {
     return b.right > p.left && b.bottom > p.top && b.top < p.bottom && b.left < p.right
 }
 
-function updateComputer() {
-
-    computer.y += (ball.y - (computer.y + computer.h / 2)) * COMPUTER_LVL;
-
-}
-
 function update() {
     console.log("actualizando...");
     ball.x += ball.velx;
@@ -201,7 +314,7 @@ function update() {
 
     //actualizamos la IA
 
-    updateComputer();
+    //updateComputer();
 
     //si golpea bordes
 
@@ -224,12 +337,22 @@ function update() {
     }
 
     if (ball.x - ball.radius < 0) {
-        computer.score++;
-        newBall();
+        if (localPlayerIndx === 1) {
+            newBall();
+            sendBallStatus();
+            sendUpdateScore(localPlayer);
+        }
+
     } else if (ball.x + ball.radius > cvs.width) {
-        localPlayer.score++;
-        newBall();
+        if (localPlayerIndx === 0) {
+            newBall();
+            sendBallStatus();
+            sendUpdateScore(localPlayer);
+        }
     }
+
+    sendLocalPlayerStatus();
+    sendBallStatus();
 
 }
 
@@ -242,7 +365,7 @@ function newBall() {
     ball.speed = BALL_VELOCIDAD;
 
 
-    pause(500);
+
 }
 
 
@@ -263,10 +386,9 @@ function initLoopGame() {
 }
 
 function play() {
-    setPlayers();
+    drawBoard();
+    initServerConnection();
     initPaddleMovement();
-    initLoopGame();
-
 }
 
 play();
